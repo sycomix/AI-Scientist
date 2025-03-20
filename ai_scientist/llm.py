@@ -42,8 +42,23 @@ AVAILABLE_LLMS = [
     # Google Gemini models
     "gemini-1.5-flash",
     "gemini-1.5-pro",
+    # Custom OpenAI-compatible provider models
+    "custom/my-model-name",
 ]
 
+# Add custom model settings
+CUSTOM_MODEL_SETTINGS = {
+    "custom/my-model-name": {
+        "base_url": os.getenv("CUSTOM_API_BASE_URL", "https://api.custom-provider.com/v1"),
+        "api_key": os.getenv("CUSTOM_API_KEY"),
+        "max_tokens": 8192,  # Custom max tokens
+        "supports_functions": False,  # Whether the model supports OpenAI functions
+        "default_temperature": 0.7,
+        "extra_headers": {  # Additional headers if needed
+            "Custom-Header": "value"
+        }
+    }
+}
 
 # Get N responses from a single message, used for ensembling.
 @backoff.on_exception(backoff.expo, (openai.RateLimitError, openai.APITimeoutError))
@@ -139,7 +154,26 @@ def get_response_from_llm(
     if msg_history is None:
         msg_history = []
 
-    if "claude" in model:
+    if model.startswith("custom/"):
+        settings = CUSTOM_MODEL_SETTINGS[model]
+        model_name = model.split("/")[-1]
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        
+        # Create completion with custom settings
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_message},
+                *new_msg_history,
+            ],
+            temperature=temperature,
+            max_tokens=settings["max_tokens"],
+            n=1,
+            stop=None,
+        )
+        content = response.choices[0].message.content
+        new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
+    elif "claude" in model:
         new_msg_history = msg_history + [
             {
                 "role": "user",
@@ -318,6 +352,15 @@ def create_client(model):
         client_model = model.split("/")[-1]
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model
+    elif model.startswith("custom/"):
+        settings = CUSTOM_MODEL_SETTINGS[model]
+        print(f"Using custom OpenAI-compatible API with model {model}")
+        client = openai.OpenAI(
+            api_key=settings["api_key"],
+            base_url=settings["base_url"],
+            default_headers=settings.get("extra_headers", {})
+        )
+        return client, model.split("/")[-1]
     elif 'gpt' in model:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
